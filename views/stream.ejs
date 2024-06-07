@@ -1,0 +1,639 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>Group Video Call</title>
+    <link
+      href="https://fonts.googleapis.com/icon?family=Material+Icons"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/css/materialize.min.css" />
+    <script
+      src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/3.0.5/socket.io.js"
+      integrity="sha512-2rUSTSAeOO02jF6eBqENNqPs1EohenJ5j+1dgDPdXSLz9nOlrr8DJk4zW/lDy8rjhGCSonW3Gx812XJQIKZKJQ=="
+      crossorigin="anonymous"
+    ></script>
+    <script
+      src="https://code.jquery.com/jquery-3.5.1.min.js"
+      integrity="sha256-9/aliU8dGd2tb6OSsuzixeV4y/faTqgFtohetphbbj0="
+      crossorigin="anonymous"
+    ></script>
+    <link rel="stylesheet" href="/css/style.css" />
+  </head>
+
+  <body>
+    <div class="main-wrap">
+      <div class="call-wrap card" style="z-index: 99">
+        <a id="meetingid" href="#" style="color: teal"></a>
+        <div
+          class="remote-video-wrap"
+          id="remote-video"
+          style="
+            margin-bottom: 0;
+            background-color: aliceblue;
+            display: flex;
+            flex-wrap: wrap;
+          "
+        >
+          <div>
+            <div
+              id="localUser"
+              class="userbox remote-user div-center"
+              style="flex-direction: column; height: 100%"
+            >
+              <h5 class="div-center"><%= username %></h5>
+              <div class="div-center">
+                <video id="localStream" autoplay></video>
+              </div>
+              <!--  camera btn -->
+              <!-- camera btn-->
+            </div>
+          </div>
+        </div>
+        <a href="/">leave</a>
+        <button id="toggleCameraButton">Start Camera</button>
+        <button id="toggleMicrophoneButton">Mute</button>
+        <button id="recordButton" onclick="toggleRecording()">Start Recording</button>
+        <button id="showCardButton" onclick="showCard()">chat</button>
+        <button id="screenShareButton">Share Screen</button>
+      </div>
+      <!-- chat html code start -->
+      <div class="card1" id="card">
+        <h5>ConFab Chat</h5>
+        <div class="chat1" id="chat">
+          <!-- Chat messages will be displayed here -->
+        </div>
+        <textarea id="messageInput" placeholder="Type your message..."></textarea>
+        <button id="btnsubmit">Send</button>
+      </div>
+      <!-- chat html code end -->
+    </div>
+    <script src="https://code.jquery.com/jquery-3.5.1.min.js"></script>
+    <script src="/js/materialize.min.js"></script>
+    <script src="/js/client.js"></script>
+    <script>
+      var rtpAudioSenders = [];
+      var rtpVideoSenders = [];
+      // var socketUrl = "http://localhost:3000";
+       var socketUrl ='https://groupvideocall-8m4w.onrender.com/'
+      var username = "<%= username %>";
+      var meeting_id = "<%= meeting_id %>";
+      // camera
+      const toggleCameraButton = document.getElementById("toggleCameraButton");
+      const toggleMicButton = document.getElementById("toggleMicrophoneButton");
+      // const localStream = document.getElementById('localStream');
+      let Stream = null;
+      // //
+      const localUserVideo = document.getElementById("localStream");
+      var remoteStream = [];
+      var audioStream = [];
+      var audioTrack;
+      var mediaTrack;
+      var users_connectionID = [];
+      var users_connection = [];
+      var sdpFunction;
+
+      sdpFunction = (data, to_connid) => {
+        socket.emit("sdpProcess", {
+          message: data,
+          to_connid: to_connid,
+        });
+      };
+
+      var socket = io.connect(socketUrl);
+
+      socket.on("connect", () => {
+        if (socket.connected) {
+          socket.emit("users_info_to_signaling_server", {
+            current_user_name: username,
+            meeting_id: meeting_id,
+          });
+        }
+
+        localConnectionID = socket.id;
+        // localUserVideo = document.getElementById("localStream");
+        processMedia();
+      });
+
+      socket.on("newConnectionInformation", function (other_users) {
+        $("#remote-video.other").remove();
+        for (let i = 0; i < other_users.length; i++) {
+          addUser(other_users[i].user_id, other_users[i].connectionId);
+          createConnection(other_users[i].connectionId);
+        }
+      });
+
+      socket.on("other_users_to_inform", function (data) {
+        addUser(data.other_users_id, data.connId);
+        createConnection(data.connId);
+      });
+
+      function addUser(other_username, connId) {
+        $("#remote-video").append(
+          `
+        <div id="` +
+            connId +
+            `" class="remote-user other div-center-column">
+           <h5 class="div-center">` +
+            other_username +
+            `</h5>
+           <div class="div-center">
+                <video autoplay id="video_` +
+            connId +
+            `"></video>
+                <audio autoplay id="audio_` +
+            connId +
+            `"></audio>
+            </div>
+        </div>
+        `
+        );
+      }
+
+      function updateMediaSender(track, rtpSenders) {
+        for (var con_id in users_connection) {
+          var connections = users_connection[con_id];
+          if (
+            connections &&
+            (connections.connectionState == "new" ||
+              connections.connectionState == "connecting" ||
+              connections.connectionState == "connected")
+          ) {
+            if (rtpSenders[con_id] && rtpSenders[con_id].track) {
+              rtpSenders[con_id].replaceTrack(track);
+            } else {
+              console.log("update media", track);
+              rtpSenders[con_id] = users_connection[con_id].addTrack(track);
+              //   rtpSenders[con_id] = users_connection[con_id].addTrack(track.MediaStream);
+            }
+          }
+        }
+      }
+
+      var iceConfig = {
+        iceServers: [
+          {
+            urls: "stun:stun.francinaconsulting.com:19302",
+
+          //  urls: "stun:Stun.l.google.com:19302",
+          },
+          {
+            urls: "stun:stun1.francinaconsulting.com:19302",
+
+        //    urls: "stun:Stun1.l.google.com:19302",
+          },
+        //  date  8/4/2024
+          {
+            urls: "stun:stun2.francinaconsulting.com:19302",
+
+         //    urls: "stun:Stun2.l.google.com:19302",
+          },
+          {
+            urls: "stun:stun3.francinaconsulting.com:19302",
+
+        //   urls: "stun:Stun3.l.google.com:19302",
+          },
+          {
+            urls: "stun:stun4.francinaconsulting.com:19302",
+
+         //    urls: "stun:Stun4.l.google.com:19302",
+          },
+        ],
+      };
+
+      async function createConnection(connId) {
+        var connection = new RTCPeerConnection(iceConfig);
+
+        connection.onicecandidate = function (event) {
+          if (event.candidate) {
+            sdpFunction(
+              JSON.stringify({
+                iceCandidate: event.candidate,
+              }),
+              connId
+            );
+          }
+        };
+
+        connection.onnegotiationneeded = async function (event) {
+          await createOffer(connId); //pending
+        };
+
+        connection.ontrack = function (event) {
+          if (!remoteStream[connId]) {
+            remoteStream[connId] = new MediaStream();
+          }
+
+          if (!audioStream[connId]) {
+            audioStream[connId] = new MediaStream();
+          }
+
+          if (event.track.kind == "video") {
+            remoteStream[connId]
+              .getTracks()
+              .forEach((t) => remoteStream[connId].removeTrack(t));
+
+            remoteStream[connId].addTrack(event.track);
+
+            var remoteVideoDiv = document.getElementById("video_" + connId);
+            remoteVideoDiv.srcObject = null;
+            remoteVideoDiv.srcObject = remoteStream[connId];
+            remoteVideoDiv.load();
+          } else if (event.track.kind == "audio") {
+            audioStream[connId]
+              .getTracks()
+              .forEach((t) => audioStream[connId].removeTrack(t));
+
+            audioStream[connId].addTrack(event.track);
+
+            var remoteAudioDiv = document.getElementById("audio_" + connId);
+            remoteAudioDiv.srcObject = null;
+            remoteAudioDiv.srcObject = audioStream[connId];
+            remoteAudioDiv.load();
+          }
+        };
+
+        users_connectionID[connId] = connId;
+        users_connection[connId] = connection;
+        updateMediaSender(mediaTrack, rtpVideoSenders);
+        updateMediaSender(audioTrack, rtpAudioSenders);
+        return connection;
+      }
+
+      async function createOffer(connid) {
+        var connection = users_connection[connid];
+        var offer = await connection.createOffer();
+
+        await connection.setLocalDescription(offer);
+
+        sdpFunction(
+          JSON.stringify({
+            offer: connection.localDescription,
+          }),
+          connid
+        );
+      }
+
+      socket.on("sdpProcess", async function (data) {
+        await sdpProcess(data.message, data.from_connid);
+      });
+
+      let vStream = null;
+      async function processMedia() {
+        {
+          try {
+            if (vStream) {
+              vStream.getTracks().forEach((track) => track.stop());
+              vStream = null;
+              localUserVideo.srcObject = null;
+              toggleCameraButton.textContent = "Start Camera";
+            } else {
+              vStream = await navigator.mediaDevices.getUserMedia({
+                video: true,
+                audio: false,
+              });
+              const videoTracks = vStream.getVideoTracks();
+
+              if (videoTracks.length > 0) {
+                mediaTrack = videoTracks[0]; // Assuming only one video track
+                console.log("Video track:", mediaTrack);
+                const localUserVideo = document.getElementById("localStream");
+                localUserVideo.srcObject = vStream;
+                toggleCameraButton.textContent = "Stop Camera";
+                updateMediaSender(mediaTrack, rtpVideoSenders);
+              } else {
+                console.error("No video tracks found in the stream");
+              }
+            }
+          } catch (err) {
+            console.error("Error accessing media devices:", err);
+          }
+        }
+        {
+          //date:04/05/2024
+          startMicrophone();
+        }
+      }
+      toggleCameraButton.addEventListener("click", processMedia);
+
+      let aStream = null;
+      //  let audioTrack = null; // Declare audioTrack outside the function to keep track of it globally if needed
+
+      async function startMicrophone() {
+        try {
+          // Request audio stream
+          if(aStream){
+            aStream.getTracks().forEach((track) => track.stop());
+            aStream = null;
+            toggleMicButton.textContent = "umnute";
+          }
+          else{
+          aStream = await navigator.mediaDevices.getUserMedia({
+            audio: true,
+            video: false,
+          });
+          // Check if stream contains audio tracks
+          if (aStream && aStream.getTracks) {
+            const soundTracks = aStream.getTracks();
+            if (soundTracks.length > 0) {
+              audioTrack = soundTracks[0]; // Assuming only one audio track
+              console.log("Audio track:", audioTrack);
+              audioTrack.enabled = true;
+              toggleMicButton.textContent = "Mute";
+              updateMediaSender(audioTrack, rtpAudioSenders);
+            } else {
+              console.error("No audio tracks found in the stream");
+            }
+          } else {
+            console.error("getUserMedia() did not return a valid stream");
+          }
+        }
+        } catch (error) {
+          console.error("Error accessing microphone:", error);
+        }
+      }
+
+      toggleMicButton.addEventListener("click", startMicrophone);
+
+      // async function processMedia() {
+      //     try{
+
+      //           var vStream = null;
+      //           var aStream = null;
+      //           ugger
+      //   vStream =  navigator.mediaDevices.getUserMedia({
+      //       video: true, audio:false
+      //   });
+
+      //   aStream = await navigator.mediaDevices.getUserMedia({
+      //       audio: true,video:false
+      //   });
+
+      //   audioTrack = aStream.getAudioTracks()[0];
+      //   audioTrack.enabled = true;
+      //   updateMediaSender(audioTrack, rtpAudioSenders);
+      //   console.log("AudioTrack:",audioTrack);
+
+      //   mediaTrack = vStream.getVideoTracks()[0];
+      //   localStream.srcObject = null;
+      //   localStream.srcObject = new MediaStream([mediaTrack]);
+      //   updateMediaSender(mediaTrack, rtpVideoSenders);
+      //   console.log('VideoTrack:',mediaTrack);
+
+      //       }
+
+      //   catch (err) {
+      //           console.log(err);
+      //       }
+      //   }
+
+      async function sdpProcess(message, from_connid) {
+        message = JSON.parse(message);
+
+        if (message.answer) {
+          await users_connection[from_connid].setRemoteDescription(
+            new RTCSessionDescription(message.answer)
+          );
+        } else if (message.offer) {
+          if (!users_connection[from_connid]) {
+            await createConnection(from_connid);
+          }
+          await users_connection[from_connid].setRemoteDescription(
+            new RTCSessionDescription(message.offer)
+          );
+          var answer = await users_connection[from_connid].createAnswer();
+
+          await users_connection[from_connid].setLocalDescription(answer);
+
+          sdpFunction(
+            JSON.stringify({
+              answer: answer,
+            }),
+            from_connid
+          );
+        } else if (message.iceCandidate) {
+          if (!users_connection[from_connid]) {
+            await createConnection(from_connid);
+          }
+          try {
+            await users_connection[from_connid].addIceCandidate(
+              message.iceCandidate
+            );
+          } catch (error) {
+            console.log(error);
+          }
+        }
+      }
+
+      socket.on("closedConnectionInfo", function (connId) {
+        $("#" + connId).remove();
+        users_connectionID[connId] = null;
+        users_connection[connId].close();
+        users_connection[connId] = null;
+        if (remoteStream[connId]) {
+          remoteStream[connId].getTracks().forEach((t) => {
+            t.stop();
+          });
+          remoteStream[connId] = null;
+        }
+      });
+
+            //----------------------------------------------------------------------------------
+      // Record Screen start
+      let mediaRecorder;
+      let recordedChunks = [];
+      let stream;
+      let isRecording = false; // State to track whether recording is in progress
+
+      // Function to start the recording
+      async function startRecording() {
+        try {
+          // Request permission to capture the user's screen
+          stream = await navigator.mediaDevices.getDisplayMedia({
+            video: {
+              cursor: "always", // Include cursor in the screen capture
+            },
+            audio: true, // Optionally include audio in the capture
+          });
+
+          // Create a MediaRecorder instance
+          mediaRecorder = new MediaRecorder(stream);
+
+          // Event handler for data available event (when recording data is available)
+          mediaRecorder.ondataavailable = (event) => {
+            if (event.data.size > 0) {
+              recordedChunks.push(event.data);
+            }
+          };
+
+          // Start recording the screen
+          mediaRecorder.start();
+
+          // Update the button label
+          document.getElementById("recordButton").textContent =
+            "Stop Recording";
+
+          // Update the state
+          isRecording = true;
+        } catch (error) {
+          console.error("Error capturing screen:", error);
+        }
+      }
+
+      // Function to stop the recording
+      function stopRecording() {
+        // Stop the recording
+        mediaRecorder.stop();
+
+        // Stop the stream
+        if (stream) {
+          stream.getTracks().forEach((track) => track.stop());
+        }
+
+        // Combine the recorded chunks and save as a video file
+        const blob = new Blob(recordedChunks, { type: "video/webm" });
+        const url = URL.createObjectURL(blob);
+
+        // Create a download link and click it to save the file
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "recording.webm";
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+
+        // Clear the recorded chunks
+        recordedChunks = [];
+
+        // Update the button label
+        document.getElementById("recordButton").textContent = "Start Recording";
+
+        // Update the state
+        isRecording = false;
+      }
+
+      // Function to handle the button click
+      function toggleRecording() {
+        if (isRecording) {
+          // Stop recording if it is currently in progress
+          stopRecording();
+        } else {
+          // Start recording if it is not in progress
+          startRecording();
+        }
+      }
+      //Record screen end
+     
+      // ------chat start------
+      var card = document.getElementById('card');
+  const btnsubmit = document.getElementById('btnsubmit');
+
+
+         function showCard() {
+          if(card.style.display = 'none'){
+            card.style.display = 'block';
+          }else{
+          card.style.display = 'none';
+          }
+         }
+        
+         document.getElementById('btnsubmit').addEventListener('click', function() {
+            var messageinput = document.getElementById('messageInput');
+            var messageInput = messageinput.value.trim();
+
+            //console.log(messageInput)
+            if(messageInput == ""){
+                  return false;
+             }
+         socket.emit('chatmessage',{
+              username,
+              messageInput , 
+              meeting_id
+          });
+              messageinput.value='';
+               messageinput.focus();
+          });
+          socket.on('chatmessage', function(message) {
+    // Handle the received message here
+    console.log(`Message from ${message.username}: ${message.text}`);
+    outputMessage(message);
+    // You can display the message in the UI or handle it as needed
+});
+function outputMessage(message) {
+  const div = document.createElement('div');
+  div.classList.add('message');
+  const p = document.createElement('p');
+  p.classList.add('meta');
+  p.innerText = message.username;
+  p.innerHTML += `: <span>${message.time}</span>`;
+  div.appendChild(p);
+  const para = document.createElement('p');
+  para.classList.add('text');
+  para.innerText = message.text;
+  div.appendChild(para);
+  document.querySelector('.chat1').appendChild(div);
+}
+       // ------chat end------
+//-------screen sharing start------
+const screenShareButton = document.getElementById("screenShareButton");
+       let isScreenSharing = false;
+       let screenStream = null;
+      
+       screenShareButton.addEventListener("click", async () => {
+            if (isScreenSharing) {
+              stopScreenSharing();
+             } else {
+              startScreenSharing();
+            }
+        });
+
+      async function startScreenSharing() {
+        try {
+            screenStream = await navigator.mediaDevices.getDisplayMedia({
+            video: true,
+            audio: false
+          });
+          const screenTrack = screenStream.getVideoTracks()[0];
+          replaceVideoTrack(screenTrack);
+          screenTrack.onended = stopScreenSharing; // Automatically stop screen sharing when user stops it
+          isScreenSharing = true;
+          screenShareButton.textContent = "Stop Sharing";
+          } catch (err) {
+           console.error("Error starting screen sharing:", err);
+        }
+      }
+
+    function stopScreenSharing() {
+      if (screenStream) {
+        screenStream.getTracks().forEach(track => track.stop());
+        screenStream = null;
+      }
+
+      if (mediaTrack) {
+        replaceVideoTrack(mediaTrack);
+       }
+      isScreenSharing = false;
+      screenShareButton.textContent = "Share Screen";
+   }
+       
+   function replaceVideoTrack(track) {
+     for (var con_id in users_connection) {
+      var connection = users_connection[con_id];
+       if (connection && (connection.connectionState == "new" || connection.connectionState == "connecting" || connection.connectionState == "connected"))
+        {
+          if (rtpVideoSenders[con_id]) {
+             rtpVideoSenders[con_id].replaceTrack(track);
+          } else {
+            rtpVideoSenders[con_id] = connection.addTrack(track);
+          }
+        }
+      }
+     localUserVideo.srcObject = new MediaStream([track]);
+   }
+  
+// screen sharing end--------
+    </script>
+  </body>
+</html>
